@@ -65,6 +65,7 @@ services:
     labels:
       # Вмикає Traefik для цього сервісу.
       - "traefik.enable=true"
+      - "traefik.docker.network=web_proxy"
       # Встановлює правило маршрутизації для дашборда Traefik, базуючись на доменному імені.
       - "traefik.http.routers.traefik-dashboard.rule=Host(`traefik.${DOMAIN_NAME}`)"
       # Вказує, що дашборд доступний лише через захищений (HTTPS) порт.
@@ -191,6 +192,7 @@ services:
     labels:
       # Вмикає Traefik для цього сервісу.
       - "traefik.enable=true"
+      - "traefik.docker.network=web_proxy"
       # Правило маршрутизації, що базується на доменному імені.
       - "traefik.http.routers.n8n.rule=Host(`${SUBDOMAIN}.${DOMAIN_NAME}`)"
       # Вказує, що n8n доступний через HTTPS.
