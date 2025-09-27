@@ -92,6 +92,8 @@ services:
       - web_proxy
     # Змінні середовища для налаштування n8n.
     environment:
+    environment:
+      - N8N_LISTEN_ADDRESS=0.0.0.0
       - N8N_BLOCK_ENV_ACCESS_IN_NODE=true
       # Встановлює хост для прослуховування.
       - N8N_HOST=${SUBDOMAIN}.${DOMAIN_NAME}
