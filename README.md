@@ -1,4 +1,6 @@
-# supabase Connection String Session pooler
+# supabase Connection String 
+Session pooler
+#Git
 sudo apt install git
 sudo apt install docker
 # 1. Оновіть список пакетів і встановіть необхідні утиліти
