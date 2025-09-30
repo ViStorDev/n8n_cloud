@@ -41,8 +41,8 @@ sudo truncate -s 0 ./traefik_data/acme.json
 chmod 600 ./traefik_data/acme.json
 ```
 # 8. Для запуску міграцій:
-# Використовуйте профіль migration, щоб запустити n8n_main для оновлення бази даних.
 ```bash
+# Використовуйте профіль migration, щоб запустити n8n_main для оновлення бази даних.
 docker compose --profile migration up --force-recreate
 ```
 # 9. Для запуску робочого середовища:
