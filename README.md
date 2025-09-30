@@ -46,8 +46,8 @@ chmod 600 ./traefik_data/acme.json
 docker compose --profile migration up --force-recreate
 ```
 # 9. Для запуску робочого середовища:
-# Використовуйте профіль main, щоб запустити n8n у повноцінному робочому режимі (з n8n_main та n8n_worker).
 ```bash
+# Використовуйте профіль main, щоб запустити n8n у повноцінному робочому режимі (з n8n_main та n8n_worker).
 docker compose --profile main up -d
 ```
 # n8n_worker
