@@ -1,6 +1,6 @@
 # supabase Connection String 
 Session pooler
-#Git
+# Git
 sudo apt install git
 sudo apt install docker
 # 1. Оновіть список пакетів і встановіть необхідні утиліти
@@ -31,3 +31,8 @@ docker compose --profile migration up --force-recreate
 # 2. Для запуску робочого середовища:
 # Використовуйте профіль main, щоб запустити n8n у повноцінному робочому режимі (з n8n_main та n8n_worker).
 docker compose --profile main up -d
+
+
+# n8n_worker
+Воркер який запускажтся нм іншій віртуальній машині і підключаєтся до черги Redis 
+для безпеки бажано щоб віртуальні машини знаходились в олній приватній мережі або в одному проекті Google cloud 
