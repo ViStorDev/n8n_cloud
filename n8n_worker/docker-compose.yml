@@ -1,0 +1,38 @@
+version: '3.9'
+
+services:
+  n8n_worker:
+    image: n8nio/n8n:latest
+    container_name: n8n_worker_2
+    restart: unless-stopped
+    user: root   # для уникнення помилок доступу
+    command: worker
+    environment:
+      - N8N_BLOCK_ENV_ACCESS_IN_NODE=true
+      - EXECUTIONS_MODE=queue
+      - DB_TYPE=postgresdb
+      - DB_POSTGRESDB_HOST=${SUPABASE_DB_HOST}
+      - DB_POSTGRESDB_PORT=${SUPABASE_DB_PORT}
+      - DB_POSTGRESDB_DATABASE=${SUPABASE_DB_DATABASE}
+      - DB_POSTGRESDB_USER=${SUPABASE_DB_USER}
+      - DB_POSTGRESDB_PASSWORD=${SUPABASE_DB_PASSWORD}
+      - QUEUE_BULL_REDIS_HOST=${REDIS_IP}
+      - QUEUE_BULL_REDIS_PORT=6379
+      - QUEUE_BULL_REDIS_PASSWORD=${REDIS_PASSWORD}
+      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY}
+      - N8N_MAIN_URL=${IP_OR_DNS_N8N_MAIN}
+      - N8N_SKIP_MIGRATIONS=true
+      - NODE_ENV=production
+      - GENERIC_TIMEZONE=Europe/Kiev
+      - TZ=Europe/Kiev
+      - N8N_DEFAULT_BINARY_DATA_MODE=filesystem
+      - N8N_METADATA_SAVE_MODE=file
+      - N8N_METADATA_FILE_BASE_PATH=/opt/n8n_workflows_files
+      - NODE_FUNCTION_ALLOW_BUILTIN=*
+      - NODE_FUNCTION_ALLOW_EXTERNAL=*
+      - N8N_LOG_LEVEL=info
+      - N8N_RUNNERS_ENABLED=true
+      - N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS=true
+      - N8N_GIT_NODE_DISABLE_BARE_REPOS=true
+    volumes:
+      - ./n8n_data:/home/node/.n8n

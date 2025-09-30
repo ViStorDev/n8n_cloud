@@ -1,0 +1,64 @@
+# traefik.yml
+api:
+  dashboard: true
+  insecure: true
+
+providers:
+  docker:
+    exposedByDefault: false
+
+entryPoints:
+  web:
+    address: ":80"
+    # Додано: Глобальне перенаправлення HTTP -> HTTPS
+    http:
+      redirections:
+        entryPoint:
+          to: "websecure"
+          scheme: "https"
+  websecure:
+    address: ":443"
+
+certificatesResolvers:
+  myresolver:
+    acme:
+      email: "your@gmail.com"
+      storage: /etc/traefik/acme.json
+      # ВИПРАВЛЕНО: Правильний синтаксис для tlsChallenge
+      tlsChallenge: {}
+      # Старий рядок для продакшн-сервера Let's Encrypt
+      caServer: https://acme-v02.api.letsencrypt.org/directory
+      # Новий рядок для staging-сервера для тестування.
+      # caserver: https://acme-staging-v02.api.letsencrypt.org/directory
+log:
+  level: DEBUG
+
+# 👇 ПОЧАТОК ДОДАНИХ ЗМІН ДЛЯ ТАЙМАУТІВ 👇
+
+http:
+  routers:
+    n8n:
+      rule: "Host(`${SUBDOMAIN}.${DOMAIN_NAME}`)"
+      entrypoints:
+        - "websecure"
+      service: "n8n"
+      tls:
+        certResolver: "myresolver"
+      # ВИПРАВЛЕНО: Видалено "@docker" з назви middleware
+      middlewares:
+        - "n8n-timeouts" 
+
+  services:
+    n8n:
+      loadBalancer:
+        servers:
+          - url: "http://n8n_main:5678"
+        passHostHeader: true
+
+  middlewares:
+    n8n-timeouts:
+      # Налаштування таймаутів, які будуть застосовані до сервісу n8n
+      timeouts:
+        idleTimeout: 300s
+        readTimeout: 300s
+        writeTimeout: 300s

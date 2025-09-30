@@ -1,0 +1,772 @@
+# Визначає версію синтаксису файлу Docker Compose.
+version: '3.9'
+
+# Блок для визначення користувацьких віртуальних мереж.
+networks:
+  # Визначення внутрішньої мережі для n8n та пов'язаних сервісів.
+  n8n_network:
+    # Задає тип мережі як 'bridge' (стандартний для ізоляції контейнерів).
+    driver: bridge
+    # Явно задає назву мережі (корисно для міжстекового зв'язку).
+    name: n8n_network
+  # Визначення мережі для зв'язку між Traefik (зворотний проксі) та іншими сервісами.
+  web_proxy:
+    # Використовує стандартний 'bridge' драйвер для цієї мережі.
+    driver: bridge
+    # Явно задає назву мережі.
+    name: web_proxy
+
+# Блок для визначення іменованих томів, які зберігають постійні дані.
+volumes:
+  # Том для зберігання основних даних і конфігурації n8n.
+  n8n_data:
+  # Том для збереження файлів воркфлоу n8n (метадані).
+  n8n_workflows:
+  # Том для зберігання двійкових даних, таких як файли, що обробляються n8n.
+  n8n_files:
+  # Том для зберігання даних Redis, що використовується n8n для черги.
+  redis_data:
+  # Том для зберігання даних сервісу Motorhead (пам'ять для LLM).
+  motorhead_data:
+  # Том для зберігання даних Redis, що використовується сервісом Motorhead.
+  motorhead_redis_data:
+  # Том для збереження конфігурації Traefik, включаючи сертифікати SSL (acme.json).
+  traefik_data:
+
+# Блок, що визначає всі сервіси (контейнери) для запуску.
+services:
+  # Сервіс для зворотного проксі Traefik, що керує вхідним трафіком.
+  n8n_reverse_proxy:
+    # Використовує офіційний образ Traefik.
+    image: traefik:latest
+    # Призначає зрозуміле ім'я для контейнера.
+    container_name: n8n_reverse_proxy
+    # Контейнер буде автоматично перезапускатися, якщо він не був зупинений вручну.
+    restart: unless-stopped
+    # Відображає порти хосту на порти контейнера.
+    ports:
+      # Перенаправляє HTTP-трафік на контейнер.
+      - "80:80"
+      # Перенаправляє HTTPS-трафік на контейнер.
+      - "443:443"
+    # Підключає контейнер до віртуальних мереж.
+    networks:
+      # Дозволяє контейнеру Traefik взаємодіяти з n8n.
+      - web_proxy
+    # Монтує томи та файли в контейнер.
+    volumes:
+      # Надає Traefik доступ до Docker API для автоматичного виявлення сервісів (тільки для читання).
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # Монтує файл для зберігання сертифікатів SSL від Let's Encrypt.
+      - ./traefik_data/acme.json:/etc/traefik/acme.json
+      # Монтує файл конфігурації Traefik у режимі "тільки для читання".
+      - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+    # Команди, що виконуються при запуску контейнера.
+    command:
+      # Забороняє Traefik автоматично виставляти всі контейнери у Docker (потрібні явні мітки).
+      - --providers.docker.exposedbydefault=false
+    # Мітки, що використовуються Traefik для автоматичної конфігурації маршрутизації.
+    labels:
+      # Вмикає Traefik для цього сервісу.
+      - "traefik.enable=true"
+      # Вказує Traefik, яку мережу використовувати для зв'язку з іншими контейнерами.
+      - "traefik.docker.network=web_proxy"
+      # Встановлює правило маршрутизації для дашборда Traefik, базуючись на доменному імені.
+      - "traefik.http.routers.traefik-dashboard.rule=Host(`traefik.${DOMAIN_NAME}`)"
+      # Вказує, що дашборд доступний через захищений (HTTPS) порт.
+      - "traefik.http.routers.traefik-dashboard.entrypoints=websecure"
+      # Активує автоматичне отримання SSL-сертифіката для дашборда.
+      - "traefik.http.routers.traefik-dashboard.tls.certresolver=myresolver"
+      # Визначає внутрішній URL для дашборда Traefik.
+      - "traefik.http.services.traefik-dashboard.loadbalancer.server.url=http://traefik:8080"
+
+  # Головний сервіс n8n, що відповідає за інтерфейс та керування.
+  n8n_main:
+    # Використовує офіційний образ n8n.
+    image: n8nio/n8n:latest
+    # Призначає ім'я контейнера.
+    container_name: n8n_main
+    # Дозволяє запуск з профілями 'migration' (для міграції) або 'main' (для звичайної роботи).
+    profiles: ["migration", "main"]
+    # Контейнер буде автоматично перезапускатися.
+    restart: unless-stopped
+    # Підключає контейнер до мереж.
+    networks:
+      # Дозволяє внутрішній зв'язок (з Redis, Motorhead, Worker).
+      - n8n_network
+      # Дозволяє зв'язок з Traefik.
+      - web_proxy
+    # Змінні середовища для налаштування n8n.
+    environment:
+      # Встановлює хост для прослуховування на всіх інтерфейсах.
+      - N8N_LISTEN_ADDRESS=0.0.0.0
+      # Блокує доступ до змінних середовища у Node.js функціях для безпеки.
+      - N8N_BLOCK_ENV_ACCESS_IN_NODE=true
+      # Встановлює хост для прослуховування, використовуючи змінні оточення.
+      - N8N_HOST=${SUBDOMAIN}.${DOMAIN_NAME}
+      # Встановлює порт n8n.
+      - N8N_PORT=5678
+      # Визначає протокол.
+      - N8N_PROTOCOL=http
+      # Задає зовнішній URL для вебхуків.
+      - WEBHOOK_URL=https://${SUBDOMAIN}.${DOMAIN_NAME}/
+      # Задає URL для тунельних вебхуків.
+      - WEBHOOK_TUNNEL_URL=https://${SUBDOMAIN}.${DOMAIN_NAME}/
+      # Вмикає режим черги для асинхронного виконання воркфлоу.
+      - EXECUTIONS_MODE=queue
+      # Налаштування підключення до бази даних (PostgreSQL).
+      - DB_TYPE=postgresdb
+      # Хост бази даних (змінна оточення).
+      - DB_POSTGRESDB_HOST=${SUPABASE_DB_HOST}
+      # Порт бази даних (змінна оточення).
+      - DB_POSTGRESDB_PORT=${SUPABASE_DB_PORT}
+      # Назва бази даних (змінна оточення).
+      - DB_POSTGRESDB_DATABASE=${SUPABASE_DB_DATABASE}
+      # Ім'я користувача бази даних (змінна оточення).
+      - DB_POSTGRESDB_USER=${SUPABASE_DB_USER}
+      # Пароль бази даних (змінна оточення).
+      - DB_POSTGRESDB_PASSWORD=${SUPABASE_DB_PASSWORD}
+      # Хост для підключення до Redis (використовується назва сервісу).
+      - QUEUE_BULL_REDIS_HOST=n8n_redis
+      # Порт Redis.
+      - QUEUE_BULL_REDIS_PORT=6379
+      # Пароль Redis (змінна оточення).
+      - QUEUE_BULL_REDIS_PASSWORD=${REDIS_PASSWORD}
+      # Ключ для шифрування даних n8n.
+      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY}
+      # Ключ API для автентифікації.
+      - N8N_API_KEY=${N8N_ENCRYPTION_KEY}
+      # Обмежує використання API-ключа тільки для вебхуків.
+      - N8N_API_KEY_AUTH_ONLY_WEBHOOKS=true
+      # Встановлює час очікування для автентифікації API-ключа.
+      - N8N_API_KEY_AUTH_TIMEOUT=30000
+      # Визначає, чи пропускати міграції бази даних (за замовчуванням false).
+      - N8N_SKIP_MIGRATIONS=${N8N_SKIP_MIGRATIONS:-false}
+      # Встановлює режим роботи на "production".
+      - NODE_ENV=production
+      # Визначає часовий пояс для n8n.
+      - GENERIC_TIMEZONE=Europe/Kiev
+      # Встановлює системний часовий пояс.
+      - TZ=Europe/Kiev
+      # Задає режим зберігання двійкових даних у файловій системі.
+      - N8N_DEFAULT_BINARY_DATA_MODE=filesystem
+      # Визначає режим збереження метаданих у файлі.
+      - N8N_METADATA_SAVE_MODE=file
+      # Вказує шлях для зберігання файлів метаданих воркфлоу.
+      - N8N_METADATA_FILE_BASE_PATH=/opt/n8n_workflows_files
+      # Дозволяє використовувати вбудовані функції Node.js у Node Function.
+      - NODE_FUNCTION_ALLOW_BUILTIN=*
+      # Дозволяє використовувати зовнішні модулі Node.js у Node Function.
+      - NODE_FUNCTION_ALLOW_EXTERNAL=*
+      # Встановлює URL для сервісу Motorhead.
+      - N8N_MOTORHEAD_URL=http://n8n_motorhead:8080
+      # Вмикає базову HTTP-автентифікацію.
+      - N8N_BASIC_AUTH_ACTIVE=true
+      # Визначає ім'я користувача для базової автентифікації (змінна оточення).
+      - N8N_BASIC_AUTH_USER=${N8N_USER}
+      # Визначає пароль для базової автентифікації (змінна оточення).
+      - N8N_BASIC_AUTH_PASSWORD=${N8N_PASSWORD}
+      # Вимикає відправку діагностичних даних.
+      - N8N_DIAGNOSTICS_ENABLED=false
+      # Встановлює рівень логування.
+      - N8N_LOG_LEVEL=info
+      # Вказує, що логи виводяться в консоль.
+      - N8N_LOG_OUTPUT=console
+      # Вмикає використання воркерів для асинхронних завдань.
+      - N8N_RUNNERS_ENABLED=true
+      # Вказує переносити ручні виконання на воркери.
+      - OFFLOAD_MANUAL_EXECUTIONS_TO_WORKERS=true
+      # Вмикає перевірку дозволів на файли налаштувань.
+      - N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS=true
+    # Монтує томи для збереження даних.
+    volumes:
+      # Зберігає основні дані та конфігурацію n8n.
+      - n8n_data:/home/node/.n8n
+      # Зберігає файли метаданих воркфлоу.
+      - n8n_workflows:/opt/n8n_workflows_files
+      # Зберігає двійкові файли.
+      - n8n_files:/data/n8n_files
+    # Встановлює залежності від інших сервісів (порядок запуску).
+    depends_on:
+      # Залежить від готовності Redis.
+      - n8n_redis
+      # Залежить від готовності Motorhead.
+      - n8n_motorhead
+    # Налаштування перевірки стану контейнера.
+    healthcheck:
+      # Команда для перевірки, чи доступний ендпоінт /healthz.
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:5678/healthz || exit 1"]
+      # Інтервал між перевірками.
+      interval: 30s
+      # Час очікування відповіді.
+      timeout: 10s
+      # Кількість спроб.
+      retries: 5
+    # Мітки для Traefik.
+    labels:
+      # Вмикає Traefik для цього сервісу.
+      - "traefik.enable=true"
+      # Вказує мережу для зв'язку з Traefik.
+      - "traefik.docker.network=web_proxy"
+      # Правило маршрутизації, що базується на доменному імені.
+      - "traefik.http.routers.n8n.rule=Host(`${SUBDOMAIN}.${DOMAIN_NAME}`)"
+      # Вказує, що n8n доступний через HTTPS.
+      - "traefik.http.routers.n8n.entrypoints=websecure"
+      # Вмикає автоматичне отримання SSL-сертифіката.
+      - "traefik.http.routers.n8n.tls.certresolver=myresolver"
+      # Визначає порт n8n для балансування навантаження.
+      - "traefik.http.services.n8n.loadbalancer.server.port=5678"
+
+  # Сервіс-воркер, що виконує завдання з черги.
+  n8n_worker:
+    # Використовує той самий образ n8n.
+    image: n8nio/n8n:latest
+    # Призначає ім'я контейнера.
+    container_name: n8n_worker
+    # Запускається лише з профілем 'main'.
+    profiles: ["main"]
+    # Контейнер буде автоматично перезапускатися.
+    restart: unless-stopped
+    # Виконує команду 'worker' для запуску воркера.
+    command: worker
+    # Підключає воркер лише до внутрішньої мережі.
+    networks:
+      - n8n_network
+    # Змінні середовища для налаштування воркера (більшість аналогічні n8n_main).
+    environment:
+      # Блокує доступ до змінних середовища у Node.js функціях.
+      - N8N_BLOCK_ENV_ACCESS_IN_NODE=true
+      # Аналогічні налаштування вебхуків.
+      - WEBHOOK_URL=https://${SUBDOMAIN}.${DOMAIN_NAME}/
+      - WEBHOOK_TUNNEL_URL=https://${SUBDOMAIN}.${DOMAIN_NAME}/
+      - EXECUTIONS_MODE=queue
+      # Налаштування підключення до Supabase.
+      - DB_TYPE=postgresdb
+      - DB_POSTGRESDB_HOST=${SUPABASE_DB_HOST}
+      - DB_POSTGRESDB_PORT=${SUPABASE_DB_PORT}
+      - DB_POSTGRESDB_DATABASE=${SUPABASE_DB_DATABASE}
+      - DB_POSTGRESDB_USER=${SUPABASE_DB_USER}
+      - DB_POSTGRESDB_PASSWORD=${SUPABASE_DB_PASSWORD}
+      # Налаштування підключення до Redis.
+      - QUEUE_BULL_REDIS_HOST=n8n_redis
+      - QUEUE_BULL_REDIS_PORT=6379
+      - QUEUE_BULL_REDIS_PASSWORD=${REDIS_PASSWORD}
+      # Ключ для шифрування.
+      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY}
+      # Ключ API.
+      - N8N_API_KEY=${N8N_ENCRYPTION_KEY}
+      # Обмеження використання API-ключа.
+      - N8N_API_KEY_AUTH_ONLY_WEBHOOKS=true
+      - N8N_API_KEY_AUTH_TIMEOUT=30000
+      # Вказує URL головного сервісу для внутрішнього зв'язку.
+      - N8N_MAIN_URL=http://n8n_main:5678
+      # Завжди пропускати міграції для воркера (міграцію виконує лише n8n_main).
+      - N8N_SKIP_MIGRATIONS=true
+      # Встановлення "production" режиму.
+      - NODE_ENV=production
+      # Налаштування часових поясів.
+      - GENERIC_TIMEZONE=Europe/Kiev
+      - TZ=Europe/Kiev
+      # Налаштування збереження даних.
+      - N8N_DEFAULT_BINARY_DATA_MODE=filesystem
+      - N8N_METADATA_SAVE_MODE=file
+      - N8N_METADATA_FILE_BASE_PATH=/opt/n8n_workflows_files
+      # Дозвіл на використання функцій.
+      - NODE_FUNCTION_ALLOW_BUILTIN=*
+      - NODE_FUNCTION_ALLOW_EXTERNAL=*
+      # URL для Motorhead.
+      - N8N_MOTORHEAD_URL=http://n8n_motorhead:8080
+      # Відключення діагностики.
+      - N8N_DIAGNOSTICS_ENABLED=false
+      # Рівень логування.
+      - N8N_LOG_LEVEL=info
+      # Виведення логів.
+      - N8N_LOG_OUTPUT=console
+      # Вмикає використання воркерів.
+      - N8N_RUNNERS_ENABLED=true
+      # Налаштування перенесення виконання.
+      - OFFLOAD_MANUAL_EXECUTIONS_TO_WORKERS=true
+      # Перевірка дозволів.
+      - N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS=true
+    # Монтує ті ж томи, що й головний сервіс, для доступу до даних.
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - n8n_workflows:/opt/n8n_workflows_files
+      - n8n_files:/data/n8n_files
+    # Залежить від готовності Redis та Motorhead.
+    depends_on:
+      - n8n_redis
+      - n8n_motorhead
+    # Воркер не має міток Traefik, оскільки не приймає зовнішній трафік.
+    labels: {}
+
+  # Сервіс Redis для черги (Bull Queue) n8n.
+ # Визначає версію синтаксису файлу Docker Compose.
+version: '3.9'
+
+# Блок для визначення користувацьких віртуальних мереж.
+networks:
+  # Визначення внутрішньої мережі для n8n та пов'язаних сервісів.
+  n8n_network:
+    # Задає тип мережі як 'bridge' (стандартний для ізоляції контейнерів).
+    driver: bridge
+    # Явно задає назву мережі (корисно для міжстекового зв'язку).
+    name: n8n_network
+  # Визначення мережі для зв'язку між Traefik (зворотний проксі) та іншими сервісами.
+  web_proxy:
+    # Використовує стандартний 'bridge' драйвер для цієї мережі.
+    driver: bridge
+    # Явно задає назву мережі.
+    name: web_proxy
+
+# Блок для визначення іменованих томів, які зберігають постійні дані.
+volumes:
+  # Том для зберігання основних даних і конфігурації n8n.
+  n8n_data:
+  # Том для збереження файлів воркфлоу n8n (метадані).
+  n8n_workflows:
+  # Том для зберігання двійкових даних, таких як файли, що обробляються n8n.
+  n8n_files:
+  # Том для зберігання даних Redis, що використовується n8n для черги.
+  redis_data:
+  # Том для зберігання даних сервісу Motorhead (пам'ять для LLM).
+  motorhead_data:
+  # Том для зберігання даних Redis, що використовується сервісом Motorhead.
+  motorhead_redis_data:
+  # Том для збереження конфігурації Traefik, включаючи сертифікати SSL (acme.json).
+  traefik_data:
+
+# Блок, що визначає всі сервіси (контейнери) для запуску.
+services:
+  # Сервіс для зворотного проксі Traefik, що керує вхідним трафіком.
+  n8n_reverse_proxy:
+    # Використовує офіційний образ Traefik.
+    image: traefik:latest
+    # Призначає зрозуміле ім'я для контейнера.
+    container_name: n8n_reverse_proxy
+    # Контейнер буде автоматично перезапускатися, якщо він не був зупинений вручну.
+    restart: unless-stopped
+    # Відображає порти хосту на порти контейнера.
+    ports:
+      # Перенаправляє HTTP-трафік на контейнер.
+      - "80:80"
+      # Перенаправляє HTTPS-трафік на контейнер.
+      - "443:443"
+    # Підключає контейнер до віртуальних мереж.
+    networks:
+      # Дозволяє контейнеру Traefik взаємодіяти з n8n.
+      - web_proxy
+    # Монтує томи та файли в контейнер.
+    volumes:
+      # Надає Traefik доступ до Docker API для автоматичного виявлення сервісів (тільки для читання).
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # Монтує файл для зберігання сертифікатів SSL від Let's Encrypt.
+      - ./traefik_data/acme.json:/etc/traefik/acme.json
+      # Монтує файл конфігурації Traefik у режимі "тільки для читання".
+      - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+    # Команди, що виконуються при запуску контейнера.
+    command:
+      # Забороняє Traefik автоматично виставляти всі контейнери у Docker (потрібні явні мітки).
+      - --providers.docker.exposedbydefault=false
+    # Мітки, що використовуються Traefik для автоматичної конфігурації маршрутизації.
+    labels:
+      # Вмикає Traefik для цього сервісу.
+      - "traefik.enable=true"
+      # Вказує Traefik, яку мережу використовувати для зв'язку з іншими контейнерами.
+      - "traefik.docker.network=web_proxy"
+      # Встановлює правило маршрутизації для дашборда Traefik, базуючись на доменному імені.
+      - "traefik.http.routers.traefik-dashboard.rule=Host(`traefik.${DOMAIN_NAME}`)"
+      # Вказує, що дашборд доступний через захищений (HTTPS) порт.
+      - "traefik.http.routers.traefik-dashboard.entrypoints=websecure"
+      # Активує автоматичне отримання SSL-сертифіката для дашборда.
+      - "traefik.http.routers.traefik-dashboard.tls.certresolver=myresolver"
+      # Визначає внутрішній URL для дашборда Traefik.
+      - "traefik.http.services.traefik-dashboard.loadbalancer.server.url=http://traefik:8080"
+
+  # Головний сервіс n8n, що відповідає за інтерфейс та керування.
+  n8n_main:
+    # Використовує офіційний образ n8n.
+    image: n8nio/n8n:latest
+    # Призначає ім'я контейнера.
+    container_name: n8n_main
+    # Дозволяє запуск з профілями 'migration' (для міграції) або 'main' (для звичайної роботи).
+    profiles: ["migration", "main"]
+    # Контейнер буде автоматично перезапускатися.
+    restart: unless-stopped
+    # Підключає контейнер до мереж.
+    networks:
+      # Дозволяє внутрішній зв'язок (з Redis, Motorhead, Worker).
+      - n8n_network
+      # Дозволяє зв'язок з Traefik.
+      - web_proxy
+    # Змінні середовища для налаштування n8n.
+    environment:
+      # Встановлює хост для прослуховування на всіх інтерфейсах.
+      - N8N_LISTEN_ADDRESS=0.0.0.0
+      # Блокує доступ до змінних середовища у Node.js функціях для безпеки.
+      - N8N_BLOCK_ENV_ACCESS_IN_NODE=true
+      # Встановлює хост для прослуховування, використовуючи змінні оточення.
+      - N8N_HOST=${SUBDOMAIN}.${DOMAIN_NAME}
+      # Встановлює порт n8n.
+      - N8N_PORT=5678
+      # Визначає протокол.
+      - N8N_PROTOCOL=http
+      # Задає зовнішній URL для вебхуків.
+      - WEBHOOK_URL=https://${SUBDOMAIN}.${DOMAIN_NAME}/
+      # Задає URL для тунельних вебхуків.
+      - WEBHOOK_TUNNEL_URL=https://${SUBDOMAIN}.${DOMAIN_NAME}/
+      # Вмикає режим черги для асинхронного виконання воркфлоу.
+      - EXECUTIONS_MODE=queue
+      # Налаштування підключення до бази даних (PostgreSQL).
+      - DB_TYPE=postgresdb
+      # Хост бази даних (змінна оточення).
+      - DB_POSTGRESDB_HOST=${SUPABASE_DB_HOST}
+      # Порт бази даних (змінна оточення).
+      - DB_POSTGRESDB_PORT=${SUPABASE_DB_PORT}
+      # Назва бази даних (змінна оточення).
+      - DB_POSTGRESDB_DATABASE=${SUPABASE_DB_DATABASE}
+      # Ім'я користувача бази даних (змінна оточення).
+      - DB_POSTGRESDB_USER=${SUPABASE_DB_USER}
+      # Пароль бази даних (змінна оточення).
+      - DB_POSTGRESDB_PASSWORD=${SUPABASE_DB_PASSWORD}
+      # Хост для підключення до Redis (використовується назва сервісу).
+      - QUEUE_BULL_REDIS_HOST=n8n_redis
+      # Порт Redis.
+      - QUEUE_BULL_REDIS_PORT=6379
+      # Пароль Redis (змінна оточення).
+      - QUEUE_BULL_REDIS_PASSWORD=${REDIS_PASSWORD}
+      # Ключ для шифрування даних n8n.
+      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY}
+      # Ключ API для автентифікації.
+      - N8N_API_KEY=${N8N_ENCRYPTION_KEY}
+      # Обмежує використання API-ключа тільки для вебхуків.
+      - N8N_API_KEY_AUTH_ONLY_WEBHOOKS=true
+      # Встановлює час очікування для автентифікації API-ключа.
+      - N8N_API_KEY_AUTH_TIMEOUT=30000
+      # Визначає, чи пропускати міграції бази даних (за замовчуванням false).
+      - N8N_SKIP_MIGRATIONS=${N8N_SKIP_MIGRATIONS:-false}
+      # Встановлює режим роботи на "production".
+      - NODE_ENV=production
+      # Визначає часовий пояс для n8n.
+      - GENERIC_TIMEZONE=Europe/Kiev
+      # Встановлює системний часовий пояс.
+      - TZ=Europe/Kiev
+      # Задає режим зберігання двійкових даних у файловій системі.
+      - N8N_DEFAULT_BINARY_DATA_MODE=filesystem
+      # Визначає режим збереження метаданих у файлі.
+      - N8N_METADATA_SAVE_MODE=file
+      # Вказує шлях для зберігання файлів метаданих воркфлоу.
+      - N8N_METADATA_FILE_BASE_PATH=/opt/n8n_workflows_files
+      # Дозволяє використовувати вбудовані функції Node.js у Node Function.
+      - NODE_FUNCTION_ALLOW_BUILTIN=*
+      # Дозволяє використовувати зовнішні модулі Node.js у Node Function.
+      - NODE_FUNCTION_ALLOW_EXTERNAL=*
+      # Встановлює URL для сервісу Motorhead.
+      - N8N_MOTORHEAD_URL=http://n8n_motorhead:8080
+      # Вмикає базову HTTP-автентифікацію.
+      - N8N_BASIC_AUTH_ACTIVE=true
+      # Визначає ім'я користувача для базової автентифікації (змінна оточення).
+      - N8N_BASIC_AUTH_USER=${N8N_USER}
+      # Визначає пароль для базової автентифікації (змінна оточення).
+      - N8N_BASIC_AUTH_PASSWORD=${N8N_PASSWORD}
+      # Вимикає відправку діагностичних даних.
+      - N8N_DIAGNOSTICS_ENABLED=false
+      # Встановлює рівень логування.
+      - N8N_LOG_LEVEL=info
+      # Вказує, що логи виводяться в консоль.
+      - N8N_LOG_OUTPUT=console
+      # Вмикає використання воркерів для асинхронних завдань.
+      - N8N_RUNNERS_ENABLED=true
+      # Вказує переносити ручні виконання на воркери.
+      - OFFLOAD_MANUAL_EXECUTIONS_TO_WORKERS=true
+      # Вмикає перевірку дозволів на файли налаштувань.
+      - N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS=true
+    # Монтує томи для збереження даних.
+    volumes:
+      # Зберігає основні дані та конфігурацію n8n.
+      - n8n_data:/home/node/.n8n
+      # Зберігає файли метаданих воркфлоу.
+      - n8n_workflows:/opt/n8n_workflows_files
+      # Зберігає двійкові файли.
+      - n8n_files:/data/n8n_files
+    # Встановлює залежності від інших сервісів (порядок запуску).
+    depends_on:
+      # Залежить від готовності Redis.
+      - n8n_redis
+      # Залежить від готовності Motorhead.
+      - n8n_motorhead
+    # Налаштування перевірки стану контейнера.
+    healthcheck:
+      # Команда для перевірки, чи доступний ендпоінт /healthz.
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:5678/healthz || exit 1"]
+      # Інтервал між перевірками.
+      interval: 30s
+      # Час очікування відповіді.
+      timeout: 10s
+      # Кількість спроб.
+      retries: 5
+    # Мітки для Traefik.
+    labels:
+      # Вмикає Traefik для цього сервісу.
+      - "traefik.enable=true"
+      # Вказує мережу для зв'язку з Traefik.
+      - "traefik.docker.network=web_proxy"
+      # Правило маршрутизації, що базується на доменному імені.
+      - "traefik.http.routers.n8n.rule=Host(`${SUBDOMAIN}.${DOMAIN_NAME}`)"
+      # Вказує, що n8n доступний через HTTPS.
+      - "traefik.http.routers.n8n.entrypoints=websecure"
+      # Вмикає автоматичне отримання SSL-сертифіката.
+      - "traefik.http.routers.n8n.tls.certresolver=myresolver"
+      # Визначає порт n8n для балансування навантаження.
+      - "traefik.http.services.n8n.loadbalancer.server.port=5678"
+
+  # Сервіс-воркер, що виконує завдання з черги.
+  n8n_worker:
+    # Використовує той самий образ n8n.
+    image: n8nio/n8n:latest
+    # Призначає ім'я контейнера.
+    container_name: n8n_worker
+    # Запускається лише з профілем 'main'.
+    profiles: ["main"]
+    # Контейнер буде автоматично перезапускатися.
+    restart: unless-stopped
+    # Виконує команду 'worker' для запуску воркера.
+    command: worker
+    # Підключає воркер лише до внутрішньої мережі.
+    networks:
+      - n8n_network
+    # Змінні середовища для налаштування воркера (більшість аналогічні n8n_main).
+    environment:
+      # Блокує доступ до змінних середовища у Node.js функціях.
+      - N8N_BLOCK_ENV_ACCESS_IN_NODE=true
+      # Аналогічні налаштування вебхуків.
+      - WEBHOOK_URL=https://${SUBDOMAIN}.${DOMAIN_NAME}/
+      - WEBHOOK_TUNNEL_URL=https://${SUBDOMAIN}.${DOMAIN_NAME}/
+      - EXECUTIONS_MODE=queue
+      # Налаштування підключення до Supabase.
+      - DB_TYPE=postgresdb
+      - DB_POSTGRESDB_HOST=${SUPABASE_DB_HOST}
+      - DB_POSTGRESDB_PORT=${SUPABASE_DB_PORT}
+      - DB_POSTGRESDB_DATABASE=${SUPABASE_DB_DATABASE}
+      - DB_POSTGRESDB_USER=${SUPABASE_DB_USER}
+      - DB_POSTGRESDB_PASSWORD=${SUPABASE_DB_PASSWORD}
+      # Налаштування підключення до Redis.
+      - QUEUE_BULL_REDIS_HOST=n8n_redis
+      - QUEUE_BULL_REDIS_PORT=6379
+      - QUEUE_BULL_REDIS_PASSWORD=${REDIS_PASSWORD}
+      # Ключ для шифрування.
+      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY}
+      # Ключ API.
+      - N8N_API_KEY=${N8N_ENCRYPTION_KEY}
+      # Обмеження використання API-ключа.
+      - N8N_API_KEY_AUTH_ONLY_WEBHOOKS=true
+      - N8N_API_KEY_AUTH_TIMEOUT=30000
+      # Вказує URL головного сервісу для внутрішнього зв'язку.
+      - N8N_MAIN_URL=http://n8n_main:5678
+      # Завжди пропускати міграції для воркера (міграцію виконує лише n8n_main).
+      - N8N_SKIP_MIGRATIONS=true
+      # Встановлення "production" режиму.
+      - NODE_ENV=production
+      # Налаштування часових поясів.
+      - GENERIC_TIMEZONE=Europe/Kiev
+      - TZ=Europe/Kiev
+      # Налаштування збереження даних.
+      - N8N_DEFAULT_BINARY_DATA_MODE=filesystem
+      - N8N_METADATA_SAVE_MODE=file
+      - N8N_METADATA_FILE_BASE_PATH=/opt/n8n_workflows_files
+      # Дозвіл на використання функцій.
+      - NODE_FUNCTION_ALLOW_BUILTIN=*
+      - NODE_FUNCTION_ALLOW_EXTERNAL=*
+      # URL для Motorhead.
+      - N8N_MOTORHEAD_URL=http://n8n_motorhead:8080
+      # Відключення діагностики.
+      - N8N_DIAGNOSTICS_ENABLED=false
+      # Рівень логування.
+      - N8N_LOG_LEVEL=info
+      # Виведення логів.
+      - N8N_LOG_OUTPUT=console
+      # Вмикає використання воркерів.
+      - N8N_RUNNERS_ENABLED=true
+      # Налаштування перенесення виконання.
+      - OFFLOAD_MANUAL_EXECUTIONS_TO_WORKERS=true
+      # Перевірка дозволів.
+      - N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS=true
+    # Монтує ті ж томи, що й головний сервіс, для доступу до даних.
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - n8n_workflows:/opt/n8n_workflows_files
+      - n8n_files:/data/n8n_files
+    # Залежить від готовності Redis та Motorhead.
+    depends_on:
+      - n8n_redis
+      - n8n_motorhead
+    # Воркер не має міток Traefik, оскільки не приймає зовнішній трафік.
+    labels: {}
+
+  # Сервіс Redis для черги (Bull Queue) n8n.
+  n8n_redis:
+    # Використовує офіційний образ Redis на базі Alpine Linux.
+    image: redis:7-alpine
+    # Призначає ім'я контейнера.
+    container_name: n8n_redis
+    # Контейнер буде автоматично перезапускатися.
+    restart: unless-stopped
+    # Відображає порт Redis на хост-машині (опціонально, але корисно для відладки).
+    ports:
+      - "6379:6379"
+    # Підключає до внутрішньої мережі n8n.
+    networks:
+      - n8n_network
+    # Команда для запуску Redis з налаштуваннями:
+      # 1. Вмикає постійне зберігання даних (Append Only File).
+      # 2. Встановлює пароль для підключення.
+      # 3. Обмежує максимальний обсяг пам'яті.
+      # 4. Встановлює політику витіснення (LRU для всіх ключів).
+    command: >
+      redis-server --appendonly yes 
+      --requirepass ${REDIS_PASSWORD} 
+      --maxmemory 512mb 
+      --maxmemory-policy volatile-lru
+    # Монтує том для збереження даних.
+    volumes:
+      - redis_data:/data
+    # Налаштування перевірки стану контейнера.
+    healthcheck:
+      # Команда для перевірки підключення та автентифікації.
+      test: ["CMD-SHELL", "redis-cli -a ${REDIS_PASSWORD} PING"]
+      # Інтервал між перевірками.
+      interval: 5s
+      # Час очікування.
+      timeout: 5s
+      # Кількість спроб.
+      retries: 10
+
+  # Сервіс Motorhead для розширеної пам'яті в n8n (long-term memory).
+  n8n_motorhead:
+    # Використовує образ Motorhead з GitHub.
+    image: ghcr.io/getmetal/motorhead:latest
+    # Призначає ім'я.
+    container_name: n8n_motorhead
+    # Контейнер буде автоматично перезапускатися.
+    restart: unless-stopped
+    # Підключає до внутрішньої мережі n8n.
+    networks:
+      - n8n_network
+    # Змінні середовища для Motorhead.
+    environment:
+      # Встановлює порт.
+      - PORT=8080
+      # URL для підключення до Redis Motorhead.
+      - REDIS_URL=redis://:${MOTORHEAD_REDIS_PASSWORD}@n8n_motorhead_redis:6379
+      # Встановлює максимальний розмір вікна "короткочасної" пам'яті.
+      - MOTORHEAD_MAX_WINDOW_SIZE=25
+      # Вмикає довготривалу пам'ять.
+      - MOTORHEAD_LONG_TERM_MEMORY=true
+      # Вказує модель LLM для використання.
+      - MOTORHEAD_MODEL=gpt-3.5-turbo
+      # Ключ API для OpenAI.
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    # Залежить від готовності Redis Motorhead.
+    depends_on:
+      - n8n_motorhead_redis
+    # Монтує том для збереження даних Motorhead.
+    volumes:
+      - motorhead_data:/data
+
+  # Сервіс Redis з RediSearch для довготривалої пам'яті Motorhead.
+  n8n_motorhead_redis:
+    # Використовує образ Redis з модулем RediSearch.
+    image: redislabs/redisearch:latest
+    # Призначає ім'я.
+    container_name: n8n_motorhead_redis
+    # Контейнер буде автоматично перезапускатися.
+    restart: unless-stopped
+    # Підключає до внутрішньої мережі n8n.
+    networks:
+      - n8n_network
+    # Команда для запуску Redis з модулем RediSearch і паролем.
+    command: redis-server --loadmodule /usr/lib/redis/modules/redisearch.so --appendonly yes --requirepass ${MOTORHEAD_REDIS_PASSWORD}
+    # Монтує том для збереження даних.
+    volumes:
+      - motorhead_redis_data:/data
+    # Налаштування перевірки стану.
+    healthcheck:
+      # Команда для перевірки підключення.
+      test: ["CMD-SHELL", "redis-cli -a ${MOTORHEAD_REDIS_PASSWORD} PING"]
+      # Інтервал.
+      interval: 5s
+      # Час очікування.
+      timeout: 5s
+      # Кількість спроб.
+      retries: 10
+    volumes:
+      - redis_data:/data
+    # Налаштування перевірки стану контейнера.
+    healthcheck:
+      # Команда для перевірки підключення та автентифікації.
+      test: ["CMD-SHELL", "redis-cli -a ${REDIS_PASSWORD} PING"]
+      # Інтервал між перевірками.
+      interval: 5s
+      # Час очікування.
+      timeout: 5s
+      # Кількість спроб.
+      retries: 10
+
+  # Сервіс Motorhead для розширеної пам'яті в n8n (long-term memory).
+  n8n_motorhead:
+    # Використовує образ Motorhead з GitHub.
+    image: ghcr.io/getmetal/motorhead:latest
+    # Призначає ім'я.
+    container_name: n8n_motorhead
+    # Контейнер буде автоматично перезапускатися.
+    restart: unless-stopped
+    # Підключає до внутрішньої мережі n8n.
+    networks:
+      - n8n_network
+    # Змінні середовища для Motorhead.
+    environment:
+      # Встановлює порт.
+      - PORT=8080
+      # URL для підключення до Redis Motorhead.
+      - REDIS_URL=redis://:${MOTORHEAD_REDIS_PASSWORD}@n8n_motorhead_redis:6379
+      # Встановлює максимальний розмір вікна "короткочасної" пам'яті.
+      - MOTORHEAD_MAX_WINDOW_SIZE=25
+      # Вмикає довготривалу пам'ять.
+      - MOTORHEAD_LONG_TERM_MEMORY=true
+      # Вказує модель LLM для використання.
+      - MOTORHEAD_MODEL=gpt-3.5-turbo
+      # Ключ API для OpenAI.
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    # Залежить від готовності Redis Motorhead.
+    depends_on:
+      - n8n_motorhead_redis
+    # Монтує том для збереження даних Motorhead.
+    volumes:
+      - motorhead_data:/data
+
+  # Сервіс Redis з RediSearch для довготривалої пам'яті Motorhead.
+  n8n_motorhead_redis:
+    # Використовує образ Redis з модулем RediSearch.
+    image: redislabs/redisearch:latest
+    # Призначає ім'я.
+    container_name: n8n_motorhead_redis
+    # Контейнер буде автоматично перезапускатися.
+    restart: unless-stopped
+    # Підключає до внутрішньої мережі n8n.
+    networks:
+      - n8n_network
+    # Команда для запуску Redis з модулем RediSearch і паролем.
+    command: redis-server --loadmodule /usr/lib/redis/modules/redisearch.so --appendonly yes --requirepass ${MOTORHEAD_REDIS_PASSWORD}
+    # Монтує том для збереження даних.
+    volumes:
+      - motorhead_redis_data:/data
+    # Налаштування перевірки стану.
+    healthcheck:
+      # Команда для перевірки підключення.
+      test: ["CMD-SHELL", "redis-cli -a ${MOTORHEAD_REDIS_PASSWORD} PING"]
+      # Інтервал.
+      interval: 5s
+      # Час очікування.
+      timeout: 5s
+      # Кількість спроб.
+      retries: 10
