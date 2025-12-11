@@ -1,5 +1,3 @@
-# supabase Connection String 
-Session pooler
 # 1. Встановіть Git
 ```bash
 sudo apt install git
@@ -35,17 +33,21 @@ sudo apt-get install docker.io docker-compose
 sudo usermod -aG docker vi_stor_dev
 newgrp docker
 ```
-# 7. Надайте права на файл acme.json доя traefik
+# 7. Клонуйте репозиторій в деректорію на сервері.
+```bash
+git clone https://github.com/ViStorDev/n8n_cloud.git
+```
+# 8. Надайте права на файл acme.json доя traefik
 ```bash
 sudo truncate -s 0 ./traefik_data/acme.json
 chmod 600 ./traefik_data/acme.json
 ```
-# 8. Для запуску міграцій:
+# 9. Для запуску міграцій:
 ```bash
 # Використовуйте профіль migration, щоб запустити n8n_main для оновлення бази даних.
 docker compose --profile migration up --force-recreate
 ```
-# 9. Для запуску робочого середовища:
+# 10. Для запуску робочого середовища:
 ```bash
 # Використовуйте профіль main, щоб запустити n8n у повноцінному робочому режимі (з n8n_main та n8n_worker).
 docker compose --profile main up -d
@@ -54,3 +56,5 @@ docker compose --profile main up -d
 Воркер який запускажтся нм іншій віртуальній машині і підключаєтся до черги Redis 
 для безпеки бажано щоб віртуальні машини знаходились в олній приватній мережі або в одному проекті Google cloud 
 На машині для worker виконайте кроки 1-5. Або створіть .sh скрипт.
+* supabase Connection String 
+Session pooler
